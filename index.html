@@ -199,6 +199,60 @@ html, body {
   color: #B8A87A;
   font-style: italic;
 }
+
+/* Botón candado (abrir/cerrar taller) dentro del modo dios */
+#diosPanel button.lock-toggle { background: #5A6E5C; }
+#diosPanel button.lock-toggle:hover { background: #6E8270; }
+#diosPanel button.lock-toggle.is-locked { background: #854F0B; }
+#diosPanel button.lock-toggle.is-locked:hover { background: #A36410; }
+
+/* === PANTALLA DE TALLER CERRADO (para alumnos) === */
+#lockedScreen {
+  position: fixed;
+  inset: 0;
+  background: #3B5240;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 90;
+  padding: 24px;
+  box-sizing: border-box;
+}
+#lockedScreen.show { display: flex; }
+#lockedScreen .lock-card {
+  max-width: 460px;
+  text-align: center;
+  background: #2C3F2F;
+  border: 1px solid #4A6B4F;
+  border-radius: 12px;
+  padding: 44px 36px;
+  color: #F2E8D5;
+  box-shadow: 0 12px 40px rgba(0,0,0,.35);
+}
+#lockedScreen .lock-icon {
+  font-size: 56px;
+  line-height: 1;
+  margin-bottom: 18px;
+}
+#lockedScreen h1 {
+  font-family: Georgia, "Times New Roman", serif;
+  letter-spacing: 3px;
+  font-size: 24px;
+  margin: 0 0 16px 0;
+  color: #F2E8D5;
+}
+#lockedScreen p {
+  font-size: 15px;
+  line-height: 1.6;
+  margin: 0 0 10px 0;
+  color: #E6D9BE;
+}
+#lockedScreen p strong { color: #F2E8D5; }
+#lockedScreen .lock-sub {
+  font-size: 13px;
+  color: #B8A87A;
+  margin-top: 14px;
+}
 </style>
 </head>
 <body>
@@ -214,10 +268,21 @@ html, body {
   <div class="toolbar">
     <button id="diosRefresh">🔄 Refrescar</button>
     <button id="diosExit" class="secondary">← Salir del modo dios</button>
+    <button id="diosLock" class="lock-toggle">🔒 Cerrar taller</button>
     <button id="diosClearAll" class="danger">🗑️ Borrar TODO el ranking</button>
     <span class="status" id="diosStatus"></span>
   </div>
   <div id="diosTable"></div>
+</div>
+
+<!-- Pantalla de "taller cerrado" para los alumnos (oculta por defecto). -->
+<div id="lockedScreen" aria-hidden="true">
+  <div class="lock-card">
+    <div class="lock-icon" id="lockIcon" title="🔒">🔒</div>
+    <h1>Taller cerrado</h1>
+    <p>El taller <strong>Mi Casa en Excel</strong> está disponible durante las clases.</p>
+    <p class="lock-sub">Cuando el profesor lo abra, podrás continuar donde lo dejaste.</p>
+  </div>
 </div>
 
 <script>
@@ -492,6 +557,7 @@ console.log("%c© Todos los derechos reservados. Uso didáctico exclusivo.","col
       if (doc){
         diosStatus.textContent = '✓ Actualizado ' + fmtDate(Date.now());
         renderDiosPanel(doc);
+        updateLockButton(!!doc.locked);
       } else {
         diosStatus.textContent = '✗ Error de conexión';
       }
@@ -535,6 +601,76 @@ console.log("%c© Todos los derechos reservados. Uso didáctico exclusivo.","col
       else   { diosStatus.textContent = '✗ Error'; }
     });
   });
+
+  // ==========================================================================
+  // BLOQUEO DEL TALLER — el profesor abre/cierra el taller desde modo dios.
+  // Cuando esta "locked", los alumnos ven la pantalla de "Taller cerrado".
+  // ==========================================================================
+  var lockedScreen = document.getElementById("lockedScreen");
+  var diosLockBtn  = document.getElementById("diosLock");
+  var _lockPollTimer = null;
+  var _wasLocked = false;
+
+  function showLockedScreen(){
+    lockedScreen.classList.add("show");
+    frame.style.display = "none";
+  }
+  function hideLockedScreen(){
+    lockedScreen.classList.remove("show");
+    frame.style.display = "block";
+  }
+
+  // Refleja el estado del candado en el botón del modo dios.
+  function updateLockButton(isLocked){
+    if (!diosLockBtn) return;
+    if (isLocked){
+      diosLockBtn.textContent = "🔓 Abrir taller";
+      diosLockBtn.classList.add("is-locked");
+    } else {
+      diosLockBtn.textContent = "🔒 Cerrar taller";
+      diosLockBtn.classList.remove("is-locked");
+    }
+  }
+
+  // El profesor pulsa el candado: invierte el estado y lo guarda en el cloud.
+  document.getElementById("diosLock").addEventListener("click", function(){
+    diosStatus.textContent = 'Actualizando...';
+    cloudFetch().then(function(doc){
+      if (!doc){ diosStatus.textContent = '✗ Error al leer'; return; }
+      doc.locked = !doc.locked;
+      cloudUpdate(doc).then(function(ok){
+        if (ok){
+          updateLockButton(doc.locked);
+          diosStatus.textContent = doc.locked
+            ? '🔒 Taller CERRADO para los alumnos'
+            : '🔓 Taller ABIERTO';
+        } else {
+          diosStatus.textContent = '✗ Error al guardar';
+        }
+      });
+    });
+  });
+
+  // Sondeo periódico (solo alumnos): si el profesor cierra/abre el taller,
+  // la pantalla de bloqueo aparece o desaparece sola sin recargar.
+  function pollLock(){
+    if (checkDiosMode()) return;
+    cloudFetch().then(function(doc){
+      if (!doc) return;              // fallo de red: no bloqueamos por error
+      var nowLocked = !!doc.locked;
+      if (nowLocked && !_wasLocked){
+        showLockedScreen();
+      } else if (!nowLocked && _wasLocked){
+        hideLockedScreen();
+        route();
+      }
+      _wasLocked = nowLocked;
+    });
+  }
+  function startLockPolling(){
+    if (_lockPollTimer) return;
+    _lockPollTimer = setInterval(pollLock, 20000);
+  }
 
   function checkDiosMode(){
     var raw = sharedState["miCasaEnExcel_v1"];
@@ -669,7 +805,15 @@ console.log("%c© Todos los derechos reservados. Uso didáctico exclusivo.","col
     showDiosPanel();
   } else {
     tryRestoreFromCloud().then(function(){
-      route();
+      return cloudFetch();
+    }).then(function(doc){
+      _wasLocked = !!(doc && doc.locked);
+      if (_wasLocked){
+        showLockedScreen();   // taller cerrado: no cargamos habitación
+      } else {
+        route();
+      }
+      startLockPolling();     // seguimos vigilando por si el profe abre/cierra
     });
   }
 })();
