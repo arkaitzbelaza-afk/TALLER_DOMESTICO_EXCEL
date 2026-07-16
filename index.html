@@ -253,6 +253,77 @@ html, body {
   color: #B8A87A;
   margin-top: 14px;
 }
+
+/* === CONTROL DE HABITACIONES (abrir/cerrar por habitación en modo dios) === */
+#diosPanel .rooms-control {
+  background: #3B5240;
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin-bottom: 20px;
+}
+#diosPanel .rooms-control-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+#diosPanel .rooms-control-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #B8A87A;
+  margin-right: auto;
+}
+#diosPanel button.mini { padding: 5px 12px; font-size: 12px; background: #5A6E5C; }
+#diosPanel button.mini:hover { background: #6E8270; }
+#diosPanel .rooms-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 8px;
+}
+#diosPanel button.room-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+  padding: 10px 14px;
+  font-size: 14px;
+}
+#diosPanel button.room-toggle.open { background: #4A6B4F; }
+#diosPanel button.room-toggle.open:hover { background: #5A7B5F; }
+#diosPanel button.room-toggle.closed { background: #5A5238; }
+#diosPanel button.room-toggle.closed:hover { background: #6A6248; }
+#diosPanel button.room-toggle .rt-state {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  opacity: .85;
+}
+
+/* Aviso emergente cuando un alumno intenta entrar a una habitación cerrada */
+#roomToast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%) translateY(20px);
+  background: #2C3F2F;
+  color: #F2E8D5;
+  border: 1px solid #854F0B;
+  border-radius: 8px;
+  padding: 12px 20px;
+  font-size: 14px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  box-shadow: 0 8px 24px rgba(0,0,0,.35);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .25s, transform .25s;
+  z-index: 120;
+  max-width: 90%;
+  text-align: center;
+}
+#roomToast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 </style>
 </head>
 <body>
@@ -272,6 +343,14 @@ html, body {
     <button id="diosClearAll" class="danger">🗑️ Borrar TODO el ranking</button>
     <span class="status" id="diosStatus"></span>
   </div>
+  <div class="rooms-control" id="roomsControl">
+    <div class="rooms-control-head">
+      <span class="rooms-control-title">Habitaciones abiertas para los alumnos</span>
+      <button id="roomsAllOpen" class="mini">Abrir todas</button>
+      <button id="roomsAllClose" class="mini">Cerrar todas</button>
+    </div>
+    <div class="rooms-grid" id="roomsGrid"></div>
+  </div>
   <div id="diosTable"></div>
 </div>
 
@@ -284,6 +363,9 @@ html, body {
     <p class="lock-sub">Volvemos enseguida. Podrás continuar donde lo dejaste.</p>
   </div>
 </div>
+
+<!-- Aviso emergente para "habitación cerrada" (oculto por defecto). -->
+<div id="roomToast" aria-hidden="true"></div>
 
 <script>
 console.log("%cMi Casa en Excel","background:#3B5240;color:#F2E8D5;padding:6px 14px;font:bold 16px Georgia,serif;letter-spacing:2px;");
@@ -558,6 +640,7 @@ console.log("%c© Todos los derechos reservados. Uso didáctico exclusivo.","col
         diosStatus.textContent = '✓ Actualizado ' + fmtDate(Date.now());
         renderDiosPanel(doc);
         updateLockButton(!!doc.locked);
+        renderRoomsControl(doc.openRooms || []);
       } else {
         diosStatus.textContent = '✗ Error de conexión';
       }
@@ -596,9 +679,15 @@ console.log("%c© Todos los derechos reservados. Uso didáctico exclusivo.","col
     if (!confirm('¿BORRAR TODOS los alumnos del ranking?\n\nEsta acción no se puede deshacer (aunque tienes versionado en JSONBin si necesitas recuperar).')) return;
     if (!confirm('Confirmación final: ¿estás seguro?')) return;
     diosStatus.textContent = 'Borrando todo...';
-    cloudUpdate({ alumnos: [], locked: false }).then(function(ok){
-      if (ok){ diosStatus.textContent = '✓ Ranking vaciado'; refreshDiosPanel(); }
-      else   { diosStatus.textContent = '✗ Error'; }
+    cloudFetch().then(function(doc){
+      doc = doc || {};
+      doc.alumnos = [];                         // vaciar solo el ranking
+      if (typeof doc.locked === "undefined") doc.locked = false;
+      if (!doc.openRooms) doc.openRooms = [];   // conservar habitaciones abiertas
+      cloudUpdate(doc).then(function(ok){
+        if (ok){ diosStatus.textContent = '✓ Ranking vaciado'; refreshDiosPanel(); }
+        else   { diosStatus.textContent = '✗ Error'; }
+      });
     });
   });
 
@@ -608,8 +697,10 @@ console.log("%c© Todos los derechos reservados. Uso didáctico exclusivo.","col
   // ==========================================================================
   var lockedScreen = document.getElementById("lockedScreen");
   var diosLockBtn  = document.getElementById("diosLock");
+  var roomToast    = document.getElementById("roomToast");
   var _lockPollTimer = null;
   var _wasLocked = false;
+  var _openRooms = [];   // habitaciones abiertas para los alumnos (por defecto ninguna)
 
   function showLockedScreen(){
     lockedScreen.classList.add("show");
@@ -658,11 +749,17 @@ console.log("%c© Todos los derechos reservados. Uso didáctico exclusivo.","col
     cloudFetch().then(function(doc){
       if (!doc) return;              // fallo de red: no bloqueamos por error
       var nowLocked = !!doc.locked;
+      _openRooms = doc.openRooms || [];
       if (nowLocked && !_wasLocked){
         showLockedScreen();
       } else if (!nowLocked && _wasLocked){
         hideLockedScreen();
         route();
+      } else if (!nowLocked && currentRoom && !isRoomOpen(currentRoom)){
+        // El alumno está en una habitación que el profe acaba de cerrar: fuera.
+        notifyRoomClosed(currentRoom);
+        if (location.hash !== "#vestibulo") location.hash = "#vestibulo";
+        else loadRoom("vestibulo", null);
       }
       _wasLocked = nowLocked;
     });
@@ -671,6 +768,90 @@ console.log("%c© Todos los derechos reservados. Uso didáctico exclusivo.","col
     if (_lockPollTimer) return;
     _lockPollTimer = setInterval(pollLock, 20000);
   }
+
+  // ==========================================================================
+  // BLOQUEO POR HABITACIÓN — el profesor abre/cierra cada habitación desde
+  // modo dios. Por defecto TODAS cerradas: una habitación solo es accesible
+  // si está en "openRooms". El Vestíbulo siempre está abierto.
+  // ==========================================================================
+  function isRoomOpen(room){
+    if (room === "vestibulo") return true;
+    return _openRooms.indexOf(room) >= 0;
+  }
+
+  // Aviso emergente cuando un alumno topa con una habitación cerrada.
+  var _toastTimer = null;
+  function notifyRoomClosed(room){
+    if (!roomToast) return;
+    var label = ROOM_LABELS[room] || room;
+    roomToast.textContent = "🔒 La habitación «" + label + "» todavía no está abierta.";
+    roomToast.classList.add("show");
+    clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(function(){ roomToast.classList.remove("show"); }, 4000);
+  }
+
+  // --- Panel dios: rejilla de habitaciones con su botón abrir/cerrar ---
+  var roomsGrid = document.getElementById("roomsGrid");
+
+  function renderRoomsControl(openRooms){
+    _openRooms = openRooms || [];
+    if (!roomsGrid) return;
+    var html = "";
+    ROOM_IDS.forEach(function(id){
+      var abierta = _openRooms.indexOf(id) >= 0;
+      html += '<button class="room-toggle ' + (abierta ? 'open' : 'closed') +
+              '" data-room="' + id + '">' +
+              (abierta ? '🔓 ' : '🔒 ') + escapeHtml(ROOM_LABELS[id] || id) +
+              '<span class="rt-state">' + (abierta ? 'Abierta' : 'Cerrada') + '</span>' +
+              '</button>';
+    });
+    roomsGrid.innerHTML = html;
+    roomsGrid.querySelectorAll('button.room-toggle').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        toggleRoom(btn.getAttribute('data-room'));
+      });
+    });
+  }
+
+  function toggleRoom(id){
+    diosStatus.textContent = 'Actualizando ' + (ROOM_LABELS[id] || id) + '...';
+    cloudFetch().then(function(doc){
+      if (!doc){ diosStatus.textContent = '✗ Error al leer'; return; }
+      var open = doc.openRooms || [];
+      var i = open.indexOf(id);
+      var cerrando = (i >= 0);
+      if (cerrando) open.splice(i, 1); else open.push(id);
+      doc.openRooms = open;
+      cloudUpdate(doc).then(function(ok){
+        if (ok){
+          renderRoomsControl(open);
+          diosStatus.textContent = '✓ ' + (ROOM_LABELS[id] || id) +
+            (cerrando ? ' cerrada' : ' abierta');
+        } else {
+          diosStatus.textContent = '✗ Error al guardar';
+        }
+      });
+    });
+  }
+
+  function setAllRooms(abrirTodas){
+    diosStatus.textContent = 'Actualizando...';
+    cloudFetch().then(function(doc){
+      if (!doc){ diosStatus.textContent = '✗ Error al leer'; return; }
+      doc.openRooms = abrirTodas ? ROOM_IDS.slice() : [];
+      cloudUpdate(doc).then(function(ok){
+        if (ok){
+          renderRoomsControl(doc.openRooms);
+          diosStatus.textContent = abrirTodas ? '✓ Todas abiertas' : '✓ Todas cerradas';
+        } else {
+          diosStatus.textContent = '✗ Error al guardar';
+        }
+      });
+    });
+  }
+
+  document.getElementById("roomsAllOpen").addEventListener("click", function(){ setAllRooms(true); });
+  document.getElementById("roomsAllClose").addEventListener("click", function(){ setAllRooms(false); });
 
   function checkDiosMode(){
     var raw = sharedState["miCasaEnExcel_v1"];
@@ -732,6 +913,17 @@ console.log("%c© Todos los derechos reservados. Uso didáctico exclusivo.","col
 
   function route(){
     var p = parseHash();
+    // Bloqueo por habitación (solo alumnos): si la habitación está cerrada,
+    // avisamos y devolvemos al Vestíbulo. El modo dios entra siempre.
+    if (!checkDiosMode() && !isRoomOpen(p.room)){
+      notifyRoomClosed(p.room);
+      if (location.hash !== "#vestibulo"){
+        location.hash = "#vestibulo";   // dispara hashchange -> route()
+      } else if (currentRoom !== "vestibulo"){
+        loadRoom("vestibulo", null);
+      }
+      return;
+    }
     if (p.room !== currentRoom){
       loadRoom(p.room, p.ej);
     } else if (p.ej !== currentEj){
@@ -808,10 +1000,11 @@ console.log("%c© Todos los derechos reservados. Uso didáctico exclusivo.","col
       return cloudFetch();
     }).then(function(doc){
       _wasLocked = !!(doc && doc.locked);
+      _openRooms = (doc && doc.openRooms) || [];
       if (_wasLocked){
         showLockedScreen();   // taller cerrado: no cargamos habitación
       } else {
-        route();
+        route();              // route() ya respeta las habitaciones cerradas
       }
       startLockPolling();     // seguimos vigilando por si el profe abre/cierra
     });
