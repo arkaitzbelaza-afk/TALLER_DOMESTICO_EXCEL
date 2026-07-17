@@ -416,37 +416,31 @@ console.log("%c© Todos los derechos reservados. Uso didáctico exclusivo.","col
   loadSharedStateFromStorage();
 
   // ==========================================================================
-  // CLOUD (JSONBin.io) — sincronizacion de progreso entre dispositivos +
-  // panel modo dios para que Arkaitz vea el avance de toda el aula.
+  // CLOUD (Firebase Realtime Database) — sincronizacion de progreso entre
+  // dispositivos + panel modo dios para ver el avance de toda el aula.
+  // El estado del taller (alumnos, locked, openRooms) vive en el nodo /taller.
   // ==========================================================================
-  function _dec(arr){
-    var s = "";
-    for (var i = 0; i < arr.length; i++) s += String.fromCharCode(arr[i] ^ 0x5A);
-    return s;
-  }
-  var _BIN = _dec([108,59,106,99,59,57,104,62,57,106,99,111,110,107,107,107,62,98,105,109,59,59,62,63]);
-  var _AK  = _dec([126,104,59,126,107,106,126,13,18,24,9,59,27,117,51,23,117,22,10,8,30,108,35,108,63,111,98,17,63,17,29,105,41,43,56,8,51,17,46,2,27,25,111,106,99,57,99,50,51,54,109,57,54,55,14,61,41,99,20,59]);
-  var _URL = "https://api.jsonbin.io/v3/b/" + _BIN;
+  var FB_URL = "https://mi-casa-en-excel-default-rtdb.europe-west1.firebasedatabase.app/taller.json";
 
   function cloudFetch(){
-    return fetch(_URL + "/latest", {
-      method: "GET",
-      headers: { "X-Access-Key": _AK }
-    }).then(function(r){
+    return fetch(FB_URL, { method: "GET" }).then(function(r){
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.json();
     }).then(function(j){
-      return j.record || { alumnos: [], locked: false };
+      // Firebase devuelve null si el nodo aun no existe. Normalizamos a arrays
+      // (Firebase puede devolver arrays como objetos {0:..,1:..}).
+      j = j || {};
+      if (!Array.isArray(j.alumnos))   j.alumnos   = j.alumnos   ? Object.keys(j.alumnos).map(function(k){ return j.alumnos[k]; })   : [];
+      if (!Array.isArray(j.openRooms)) j.openRooms = j.openRooms ? Object.keys(j.openRooms).map(function(k){ return j.openRooms[k]; }) : [];
+      if (typeof j.locked === "undefined") j.locked = false;
+      return j;
     }).catch(function(){ return null; });
   }
 
   function cloudUpdate(doc){
-    return fetch(_URL, {
+    return fetch(FB_URL, {
       method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Access-Key": _AK
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(doc)
     }).then(function(r){ return r.ok; })
       .catch(function(){ return false; });
@@ -701,6 +695,7 @@ console.log("%c© Todos los derechos reservados. Uso didáctico exclusivo.","col
   var _lockPollTimer = null;
   var _wasLocked = false;
   var _openRooms = [];   // habitaciones abiertas para los alumnos (por defecto ninguna)
+  var _roomsKnown = false; // ¿hemos podido leer el estado de la nube alguna vez?
 
   function showLockedScreen(){
     lockedScreen.classList.add("show");
@@ -748,6 +743,7 @@ console.log("%c© Todos los derechos reservados. Uso didáctico exclusivo.","col
     if (checkDiosMode()) return;
     cloudFetch().then(function(doc){
       if (!doc) return;              // fallo de red: no bloqueamos por error
+      _roomsKnown = true;
       var nowLocked = !!doc.locked;
       _openRooms = doc.openRooms || [];
       if (nowLocked && !_wasLocked){
@@ -775,15 +771,11 @@ console.log("%c© Todos los derechos reservados. Uso didáctico exclusivo.","col
   // si está en "openRooms". El Vestíbulo siempre está abierto.
   // ==========================================================================
   function isRoomOpen(room){
-    // === DESBLOQUEO TEMPORAL (cuota de JSONBin agotada, 17/07/2026) ===
-    // Mientras la nube no puede guardar qué habitaciones están abiertas,
-    // dejamos TODAS accesibles para no bloquear la clase. Revertir cuando
-    // se amplíe/renueve el plan de JSONBin y se reactive el control por sala.
-    return true;
-    /* Comportamiento normal (control por habitación):
     if (room === "vestibulo") return true;
+    // Si aún no hemos podido leer el estado de la nube (o está caída), NO
+    // bloqueamos: es preferible dejar entrar que dejar a la clase tirada.
+    if (!_roomsKnown) return true;
     return _openRooms.indexOf(room) >= 0;
-    */
   }
 
   // Aviso emergente cuando un alumno topa con una habitación cerrada.
@@ -1006,6 +998,7 @@ console.log("%c© Todos los derechos reservados. Uso didáctico exclusivo.","col
     tryRestoreFromCloud().then(function(){
       return cloudFetch();
     }).then(function(doc){
+      if (doc) _roomsKnown = true;
       _wasLocked = !!(doc && doc.locked);
       _openRooms = (doc && doc.openRooms) || [];
       if (_wasLocked){
