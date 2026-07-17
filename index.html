@@ -775,8 +775,15 @@ console.log("%c© Todos los derechos reservados. Uso didáctico exclusivo.","col
   // si está en "openRooms". El Vestíbulo siempre está abierto.
   // ==========================================================================
   function isRoomOpen(room){
+    // === DESBLOQUEO TEMPORAL (cuota de JSONBin agotada, 17/07/2026) ===
+    // Mientras la nube no puede guardar qué habitaciones están abiertas,
+    // dejamos TODAS accesibles para no bloquear la clase. Revertir cuando
+    // se amplíe/renueve el plan de JSONBin y se reactive el control por sala.
+    return true;
+    /* Comportamiento normal (control por habitación):
     if (room === "vestibulo") return true;
     return _openRooms.indexOf(room) >= 0;
+    */
   }
 
   // Aviso emergente cuando un alumno topa con una habitación cerrada.
